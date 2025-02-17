@@ -4,6 +4,7 @@ use std::{
     env::SplitPaths,
     ffi::{CStr, OsStr},
     io::{stderr, BufReader, Write},
+    ops::Deref,
     os::{
         raw::{c_char, c_int, c_uint, c_ulong},
         unix::prelude::OsStrExt,
@@ -15,9 +16,11 @@ use std::{
 };
 
 use libc::{c_void, memcpy};
+use parking_lot::RwLock;
 
 use crate::{
     cow_bytes::{CowBytes, SlicedCowBytes},
+    data_management::Dml,
     database::{AccessMode, Database, Dataset, Error, Snapshot},
     object::{ObjectHandle, ObjectStore},
     storage_pool::{LeafVdev, StoragePoolConfiguration, TierConfiguration, Vdev},
@@ -118,6 +121,20 @@ impl HandleResult for Database {
     type Result = *mut db_t;
     fn success(self) -> *mut db_t {
         b(db_t(self))
+    }
+    fn fail() -> *mut db_t {
+        null_mut()
+    }
+}
+
+impl HandleResult for Arc<RwLock<Database>> {
+    type Result = *mut db_t;
+    fn success(self) -> *mut db_t {
+        unsafe {
+            let rwlock_db = Arc::into_raw(self);
+            let db = rwlock_db.read();
+            b(db_t(db.into_inner()))
+        }
     }
     fn fail() -> *mut db_t {
         null_mut()
@@ -378,7 +395,7 @@ pub unsafe extern "C" fn betree_configuration_set_disks(
 /// On error, return null.  If `err` is not null, store an error in `err`.
 #[no_mangle]
 pub unsafe extern "C" fn betree_build_db(cfg: *const cfg_t, err: *mut *mut err_t) -> *mut db_t {
-    Database::build((*cfg).0.clone()).handle_result(err)
+    Database::build_threaded((*cfg).0.clone()).handle_result(err)
 }
 
 /// Open a database given by a configuration. If no initialized database is present this procedure will fail.
@@ -389,7 +406,7 @@ pub unsafe extern "C" fn betree_build_db(cfg: *const cfg_t, err: *mut *mut err_t
 pub unsafe extern "C" fn betree_open_db(cfg: *const cfg_t, err: *mut *mut err_t) -> *mut db_t {
     let mut db_cfg = (*cfg).0.clone();
     db_cfg.access_mode = AccessMode::OpenIfExists;
-    Database::build(db_cfg).handle_result(err)
+    Database::build_threaded(db_cfg).handle_result(err)
 }
 
 /// Create a database given by a configuration.
@@ -402,7 +419,7 @@ pub unsafe extern "C" fn betree_open_db(cfg: *const cfg_t, err: *mut *mut err_t)
 pub unsafe extern "C" fn betree_create_db(cfg: *const cfg_t, err: *mut *mut err_t) -> *mut db_t {
     let mut db_cfg = (*cfg).0.clone();
     db_cfg.access_mode = AccessMode::AlwaysCreateNew;
-    Database::build(db_cfg).handle_result(err)
+    Database::build_threaded(db_cfg).handle_result(err)
 }
 
 /// Create a database given by a configuration.
@@ -418,7 +435,8 @@ pub unsafe extern "C" fn betree_open_or_create_db(
 ) -> *mut db_t {
     let mut db_cfg = (*cfg).0.clone();
     db_cfg.access_mode = AccessMode::OpenOrCreate;
-    Database::build(db_cfg).handle_result(err)
+    // BUG: This returns a nullptr
+    Database::build_threaded(db_cfg).handle_result(err)
 }
 
 /// Sync a database.

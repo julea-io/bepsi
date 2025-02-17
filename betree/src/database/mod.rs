@@ -1,5 +1,6 @@
 //! This module provides the Database Layer.
 use crate::{
+    allocator::*,
     atomic_option::AtomicOption,
     cache::ClockCache,
     checksum::GxHash,
@@ -150,6 +151,9 @@ pub struct DatabaseConfiguration {
 
     /// Where to log the allocations
     pub allocation_log_file_path: PathBuf,
+
+    /// Select the allocator to use
+    pub allocator: AllocatorType,
 }
 
 impl Default for DatabaseConfiguration {
@@ -166,6 +170,7 @@ impl Default for DatabaseConfiguration {
             metrics: None,
             migration_policy: None,
             allocation_log_file_path: PathBuf::from("allocation_log.bin"),
+            allocator: AllocatorType::SegmentAllocator,
         }
     }
 }
@@ -212,6 +217,7 @@ impl DatabaseConfiguration {
             free_space_tier: (0..NUM_STORAGE_CLASSES)
                 .map(|_| AtomicStorageInfo::default())
                 .collect_vec(),
+            allocator: self.allocator,
             allocations: AtomicU64::new(0),
             old_root_allocation: SeqLock::new(None),
             allocators: RwLock::new(HashMap::new()),

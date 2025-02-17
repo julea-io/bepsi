@@ -4,7 +4,7 @@ use super::{
     AtomicStorageInfo, DatasetId, DeadListData, Generation, StorageInfo, TreeInner,
 };
 use crate::{
-    allocator::{Action, SegmentAllocator, SegmentId, SEGMENT_SIZE_BYTES},
+    allocator::*,
     atomic_option::AtomicOption,
     cow_bytes::SlicedCowBytes,
     data_management::{CopyOnWriteEvent, Dml, HasStoragePreference, ObjectReference},
@@ -53,12 +53,13 @@ pub struct Handler<OR: ObjectReference> {
     pub(crate) free_space_tier: Vec<AtomicStorageInfo>,
     pub(crate) delayed_messages: Mutex<Vec<(Box<[u8]>, SlicedCowBytes)>>,
     pub(crate) last_snapshot_generation: RwLock<HashMap<DatasetId, Generation>>,
+    pub(crate) allocator: AllocatorType,
     // Cache for allocators which have been in use since the last sync. This is
     // done to avoid cyclical updates on evictions.
     // NOTE: This map needs to be updated/emptied on sync's as the internal
     // representation is not updated on deallocation to avoid overwriting
     // potentially valid fallback data.
-    pub(crate) allocators: RwLock<HashMap<SegmentId, RwLock<SegmentAllocator>>>,
+    pub(crate) allocators: RwLock<HashMap<SegmentId, RwLock<Box<dyn Allocator>>>>,
     pub(crate) allocations: AtomicU64,
     pub(crate) old_root_allocation: SeqLock<Option<(DiskOffset, Block<u32>)>>,
 }
@@ -95,13 +96,13 @@ impl<OR: ObjectReference + HasStoragePreference> Handler<OR> {
     }
 }
 
-pub struct SegmentAllocatorGuard<'a> {
-    inner: RwLockReadGuard<'a, HashMap<SegmentId, RwLock<SegmentAllocator>>>,
+pub struct AllocatorGuard<'a> {
+    inner: RwLockReadGuard<'a, HashMap<SegmentId, RwLock<Box<dyn Allocator>>>>,
     id: SegmentId,
 }
 
-impl<'a> SegmentAllocatorGuard<'a> {
-    pub fn access(&self) -> RwLockWriteGuard<SegmentAllocator> {
+impl<'a> AllocatorGuard<'a> {
+    pub fn access(&self) -> RwLockWriteGuard<Box<dyn Allocator>> {
         self.inner.get(&self.id).unwrap().write()
     }
 }
@@ -159,7 +160,7 @@ impl<OR: ObjectReference + HasStoragePreference> Handler<OR> {
         Ok(())
     }
 
-    pub fn get_allocation_bitmap<X>(&self, id: SegmentId, dmu: &X) -> Result<SegmentAllocatorGuard>
+    pub fn get_allocation_bitmap<X>(&self, id: SegmentId, dmu: &X) -> Result<AllocatorGuard>
     where
         X: Dml<Object = Node<OR>, ObjectRef = OR, ObjectPointer = OR::ObjectPointer>,
     {
@@ -167,7 +168,7 @@ impl<OR: ObjectReference + HasStoragePreference> Handler<OR> {
             // Test if bitmap is already in cache
             let foo = self.allocators.read();
             if foo.contains_key(&id) {
-                return Ok(SegmentAllocatorGuard { inner: foo, id });
+                return Ok(AllocatorGuard { inner: foo, id });
             }
         }
 
@@ -194,7 +195,21 @@ impl<OR: ObjectReference + HasStoragePreference> Handler<OR> {
             }
         }
 
-        let mut allocator = SegmentAllocator::new(bitmap);
+        let mut allocator: Box<dyn Allocator> = match self.allocator {
+            AllocatorType::FirstFitScan => Box::new(FirstFitScan::new(bitmap)),
+            AllocatorType::FirstFitList => Box::new(FirstFitList::new(bitmap)),
+            AllocatorType::FirstFitTree => Box::new(FirstFitTree::new(bitmap)),
+            AllocatorType::NextFitScan => Box::new(NextFitScan::new(bitmap)),
+            AllocatorType::NextFitList => Box::new(NextFitList::new(bitmap)),
+            AllocatorType::BestFitScan => Box::new(BestFitScan::new(bitmap)),
+            AllocatorType::BestFitList => Box::new(BestFitList::new(bitmap)),
+            AllocatorType::BestFitTree => Box::new(BestFitTree::new(bitmap)),
+            AllocatorType::ApproximateBestFitTree => Box::new(ApproximateBestFitTree::new(bitmap)),
+            AllocatorType::WorstFitScan => Box::new(WorstFitScan::new(bitmap)),
+            AllocatorType::WorstFitList => Box::new(WorstFitList::new(bitmap)),
+            AllocatorType::WorstFitTree => Box::new(WorstFitTree::new(bitmap)),
+            AllocatorType::SegmentAllocator => Box::new(SegmentAllocator::new(bitmap)),
+        };
 
         if let Some((offset, size)) = self.old_root_allocation.read() {
             if SegmentId::get(offset) == id {
@@ -207,7 +222,7 @@ impl<OR: ObjectReference + HasStoragePreference> Handler<OR> {
         self.allocators.write().insert(id, RwLock::new(allocator));
 
         let foo = self.allocators.read();
-        Ok(SegmentAllocatorGuard { inner: foo, id })
+        Ok(AllocatorGuard { inner: foo, id })
     }
 
     pub fn free_space_disk(&self, disk_id: GlobalDiskId) -> Option<StorageInfo> {

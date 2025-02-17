@@ -267,6 +267,10 @@ impl<K: Clone + Eq + Hash + Sync + Send + 'static, V: Sync + Send + SizeMut + 's
         self.verify();
 
         let len = self.clock.len();
+        if len == 0 {
+            return None;
+        }
+
         let mut cnt = 0;
         let ret = loop {
             let eviction_successful = {

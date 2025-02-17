@@ -68,6 +68,7 @@ quickcheck = "1"
 quickcheck_macros = "1"
 clap = "2.33"
 criterion = "0.3"
+zipf = "7.0.1"
 
 [features]
 default = ["init_env_logger", "figment_config"]

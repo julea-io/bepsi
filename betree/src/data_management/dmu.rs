@@ -6,7 +6,7 @@ use super::{
     CopyOnWriteEvent, Dml, HasStoragePreference, Object, ObjectReference,
 };
 use crate::{
-    allocator::{Action, SegmentAllocator, SegmentId, SEGMENT_SIZE},
+    allocator::{Action, SegmentId, SEGMENT_SIZE},
     buffer::Buf,
     cache::{Cache, ChangeKeyError, RemoveError},
     checksum::{Builder, Checksum, State},
